@@ -1,0 +1,26 @@
+Hello.
+
+I often find myself needing to do really odd and weird things
+in order to avoid administrative overhead of 'fixing' a distro's
+library, or installing multiple versions thereof.
+
+Sometimes the actual task to be fixed is trivial, but it's difficult
+to make the external library (or even binary) do what you want it
+to do.
+
+libmonkey will completely replace a function for you with another
+function of your choosing.
+
+The function must match the exact prototype of the old one, and should
+return the same type of value as the old one.
+
+Optionally you can obtain the machine code which formerly belonged
+to the 'pristine' original function, for later analysis.
+
+This currently only works on ia32/amd64 architectures with the ELF
+format and linux/glibc (it's possible it can work on other platforms
+supporting ELF, but I doubt that).
+
+See the Makefile and test_inject.c for example usage
+
+- M. Nunberg
