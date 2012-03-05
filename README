@@ -23,4 +23,20 @@ supporting ELF, but I doubt that).
 
 See the Makefile and test_inject.c for example usage
 
+DEBUGGING
+
+You can get libmonkey to output more verbose information by setting
+LIBMONKEY_DEBUG in the environment. The number should be a numeric
+value. The higher the value, the more information is displayed
+
+LIMITATIONS
+
+- The physical code size of the old function must be at least 12 bytes
+(for amd64 platforms) or 5 bytes (for i386).
+
+- If the victim binary was compiled with optimizations, it is possible
+that the compiler may have entirely inlined the function for various
+invocations. This means that control is never transferred to the
+victim's actual address.
+
 - M. Nunberg

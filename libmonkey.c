@@ -16,9 +16,64 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <inttypes.h>
 #include <sys/mman.h>
 
 #include "libmonkey.h"
+
+static int Libmonkey_Debug = 0;
+
+static void
+__attribute__((constructor))
+init_debug(void)
+{
+    const char *envar = getenv("LIBMONKEY_DEBUG");
+    if(envar) {
+        sscanf(envar, "%d", &Libmonkey_Debug);
+    }
+}
+
+#define DEBUG_MSG(lvl, ...) \
+    if(lvl <= Libmonkey_Debug) { \
+    fprintf(stderr, "LIBMONKEY: "); \
+    fprintf(stderr, __VA_ARGS__); \
+    fprintf(stderr, "\n"); \
+    }
+
+#define DUMP_SHDR(...) \
+    if(Libmonkey_Debug >= 5) { dump_shdr(__VA_ARGS__); }
+
+#define DUMP_SYMENT(...) \
+    if(Libmonkey_Debug >= 5) { dump_syment(__VA_ARGS__); }
+
+static inline void dump_shdr(ElfW(Shdr) *shdr, const char *name, size_t ii)
+{
+    if (name == NULL) {
+        name = "";
+    }
+    fprintf(stderr, "SECTION: \"%s\": "
+            "idx=%lu, type=%"PRIx64 " , flags=%"PRIx64", info=%"PRIx32"\n",
+            name,
+            ii,
+            (uint64_t)shdr->sh_type,
+            (uint64_t)shdr->sh_flags,
+            (uint32_t)shdr->sh_info);
+
+}
+
+static inline void dump_syment(ElfW(Sym) *syment, const char *name)
+{
+    if (name == NULL) {
+        name = "";
+    }
+    fprintf(stderr, "SYMBOL: \"\%s\" ndx=%d @%p [%luB]\n",
+            name,
+            syment->st_shndx,
+            (void*)syment->st_value,
+            syment->st_size);
+}
 
 int libmonkey_patch(libmonkey_t monkey,
                     const char *victim,
@@ -26,7 +81,7 @@ int libmonkey_patch(libmonkey_t monkey,
                     void **old,
                     size_t *nold)
 {
-    const void *mapaddr = monkey->addr;
+    void *mapaddr = monkey->addr;
     ElfW(Ehdr) *ehdr = mapaddr;
     ElfW(Shdr) *shdr, *sym_shdr = NULL, *dynsym_shdr = NULL;
     ElfW(Sym) *syments = NULL;
@@ -39,61 +94,63 @@ int libmonkey_patch(libmonkey_t monkey,
 
     stridx = ehdr->e_shstrndx;
 
-    printf("String Table Index=%d\n", ehdr->e_shstrndx);
+    DEBUG_MSG(5, "String table index=%d", ehdr->e_shstrndx);
 
     shdr = mapaddr + ehdr->e_shoff;
     strtable = mapaddr + shdr[stridx].sh_offset;
 
     for (ii = 0; ii < ehdr->e_shnum; ii++) {
+        const char *section_name = "";
         size_t nameidx = shdr[ii].sh_name;
-        char *section_name = strtable + nameidx;
-        printf("\nSection idx=%lu, nameidx=%lx, type=%x, flags=%x, info=%x\n",
-                ii,
-                nameidx,
-                shdr[ii].sh_type,
-                shdr[ii].sh_flags,
-                shdr[ii].sh_info);
+
         if (nameidx) {
-            printf("\tName is %s\n", section_name);
+            section_name = strtable + nameidx;
         }
 
-        if (shdr[ii].sh_type == SHT_SYMTAB) {
+        DUMP_SHDR(shdr + ii, section_name, ii);
+
+        switch(shdr[ii].sh_type) {
+        case SHT_SYMTAB:
             sym_shdr = shdr + ii;
-        } else if(shdr[ii].sh_type == SHT_DYNSYM) {
+            break;
+        case SHT_DYNSYM:
             dynsym_shdr = shdr + ii;
-        } else if (shdr[ii].sh_type == SHT_STRTAB &&
-                strcmp(section_name, ".strtab") == 0) {
-            printf("Found symbol string table!\n");
-            symstrs = mapaddr + (size_t)shdr[ii].sh_offset;
-        } else if (shdr[ii].sh_type == SHT_STRTAB &&
-                strcmp(section_name, ".dynstr") == 0) {
-            printf("Found .dynstr\n");
-            dynsymstrs = mapaddr + (size_t)shdr[ii].sh_offset;
+            break;
+        case SHT_STRTAB: {
+            char *some_strtbl = mapaddr + (ptrdiff_t)shdr[ii].sh_offset;
+            if (strcmp(section_name, ".strtab") == 0) {
+                symstrs = some_strtbl;
+            } else if (strcmp(section_name, ".dynstr") == 0) {
+                dynsymstrs = some_strtbl;
+            }
+            break;
+        }
+        default:
+            break;
         }
     }
 
 
     if (sym_shdr == NULL) {
         if (dynsym_shdr) {
-            printf("Using .dynsym instead\n");
+            DEBUG_MSG(3, "Couldn't find symbol in .symtab. Using .dynsym");
             sym_shdr = dynsym_shdr;
             symstrs = dynsymstrs;
         } else {
-            printf("Couldn't find symbol table. Aborting\n");
-            abort();
+            DEBUG_MSG(1, "Couldn't find symbol table!");
+            return -1;
         }
     }
 
     if (symstrs == NULL) {
-        printf("Couldn't find symbol string table!\n");
-        abort();
+        DEBUG_MSG(1, "Couldn't find symbol string table");
+        return -1;
     }
 
     nsyms = sym_shdr->sh_size / sizeof(ElfW(Sym));
     syments = mapaddr + sym_shdr->sh_offset;
 
-
-    printf("\n\nLooking At symbols\n\n");
+    DEBUG_MSG(3, "Will analyze symbols");
 
     for (ii = 0; ii < nsyms; ii++) {
         char *symname;
@@ -105,29 +162,25 @@ int libmonkey_patch(libmonkey_t monkey,
             continue;
         }
         symname = symstrs + nameidx;
-        printf("Symbol name=%s, shndx=%d, addr=%x, sz=%lu\n",
-                symname,
-                syments[ii].st_shndx,
-                syments[ii].st_value,
-                syments[ii].st_size);
+        DUMP_SYMENT(syments + ii, symname);
 
         if (strcmp(symname, victim) == 0) {
-            printf("Found function to override!\n");
+            DEBUG_MSG(1, "Found function to override (@%p, [%luB]!",
+                      (void*)syments[ii].st_value, syments[ii].st_size);
             symvictim = syments + ii;
             break;
         }
     }
 
     if (!symvictim) {
-        fprintf(stderr, "LIBMONKEY: couldn't find symbol \"%s\"\n", victim);
+        DEBUG_MSG(1, "LIBMONKEY: couldn't find symbol \"%s\"", victim);
         return -1;
     }
 
     if (!symvictim->st_value) {
-        fprintf(stderr, "LIBMONKEY: Symbol \"%s\" referenced but not defined\n", victim);
+        DEBUG_MSG(1, "LIBMONKEY: Symbol \"%s\" referenced but not defined", victim);
         return -1;
     }
-
     if (old) {
         *old = malloc(symvictim->st_size);
         memcpy(*old, (void*)symvictim->st_value, symvictim->st_size);
